@@ -8,6 +8,7 @@ import ghidra.program.model.data.DataUtilities.ClearDataMode;
 import ghidra.program.model.data.StringDataType;
 import ghidra.program.model.listing.Data;
 import ghidra.program.model.mem.MemoryAccessException;
+import ghidra.program.model.util.CodeUnitInsertionException;
 import ghidra.util.task.TaskMonitor;
 
 public class Strings extends GhidraScript {
@@ -29,13 +30,18 @@ public class Strings extends GhidraScript {
             if (length >= MIN_LENGTH) {
                 println("Potential string at " + data.getAddress());
 
-                DataUtilities.createData(
-                        currentProgram,
-                        data.getAddress(),
-                        StringDataType.dataType,
-                        -1,
-                        false,
-                        ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA);
+                try {
+                    DataUtilities.createData(
+                            currentProgram,
+                            data.getAddress(),
+                            StringDataType.dataType,
+                            -1,
+                            false,
+                            ClearDataMode.CLEAR_ALL_UNDEFINED_CONFLICT_DATA);
+                } catch (CodeUnitInsertionException e) {
+                    printerr(e.toString());
+                    continue;
+                }
             }
         }
     }

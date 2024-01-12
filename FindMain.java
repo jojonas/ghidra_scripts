@@ -24,6 +24,7 @@ import ghidra.program.model.symbol.ReferenceManager;
 import ghidra.program.util.SymbolicPropogator;
 import ghidra.util.exception.CancelledException;
 import lib.ScriptUtils;
+import lib.ParamHelper;
 
 public class FindMain extends GhidraScript {
     private static final DataType INT = IntegerDataType.dataType;
@@ -31,7 +32,7 @@ public class FindMain extends GhidraScript {
     private static final DataType CHAR_PTR_PTR = PointerDataType.getPointer(CHAR_PTR, -1);
     private static final DataType VOID_PTR = PointerDataType.getPointer(VoidDataType.dataType, -1);
 
-    private DataTypeManager dtm;
+    private FunctionManager fm;
 
     private void setMainSignature(Function func) {
         ScriptUtils.setFunctionSignature(
@@ -60,39 +61,49 @@ public class FindMain extends GhidraScript {
                 INT);
     }
 
-    public long getParameterValue(Function func, Address address, int index) throws CancelledException {
-        final Parameter parameter = func.getParameter(index);
-        if (parameter == null) {
-            printerr("Unable to retrieve parameter " + index);
-            return 0;
-        }
-        if (!parameter.isRegisterVariable()) {
-            printerr("Currently only processors passing parameters via registers are supported.");
-            return 0;
-        }
-
-        Function caller = getFunctionContaining(address);
-        if (caller == null) {
-            printerr("Could not find function containing " + address);
-            return 0;
-        }
-
-        SymbolicPropogator prop = ScriptUtils.analyzeFunction(caller, monitor);
-        SymbolicPropogator.Value value = prop.getRegisterValue(address, parameter.getRegister());
-        if (value == null) {
-            printerr("Could not get register value for parameter " + index);
-            return 0;
-        }
-
-        return value.getValue();
-    }
-
     @Override
     public void run() throws Exception {
-        dtm = currentProgram.getDataTypeManager();
+        fm = currentProgram.getFunctionManager();
 
+        Function main = null;
+
+        if (main == null) {
+            Optional<Function> omain = StreamSupport.stream(
+                    fm
+                            .getFunctions(true)
+                            .spliterator(),
+                    false)
+                    .filter(f -> f.getName().equals("main"))
+                    .findFirst();
+
+            if (omain.isPresent()) {
+                if (askYesNo(FindMain.class.getName(),
+                        "Existing main function detected at " + omain.get().getEntryPoint() + ". Use it?")) {
+                    main = omain.get();
+                }
+            }
+        }
+
+        if (main == null) {
+            main = detectMain();
+        }
+
+        if (main == null) {
+            printerr("main function not found.");
+            return;
+        }
+
+        if (main.isThunk()) {
+            printerr("Main is a thunked function?");
+        }
+
+        setMainSignature(main);
+        goTo(main);
+    }
+
+    private Function detectMain() throws Exception {
         Optional<Function> libcStartMain = StreamSupport.stream(
-                currentProgram.getFunctionManager()
+                fm
                         .getFunctions(true)
                         .spliterator(),
                 false)
@@ -102,7 +113,7 @@ public class FindMain extends GhidraScript {
 
         if (!libcStartMain.isPresent()) {
             printerr("Could not find __libc_start_main!");
-            return;
+            return null;
         }
 
         setLibcStartMainSignature(libcStartMain.get());
@@ -119,44 +130,19 @@ public class FindMain extends GhidraScript {
 
         if (!libcStartMainInvocationAddress.isPresent()) {
             printerr("Could not find invocation of __libc_start_main!");
-            return;
+            return null;
         }
 
-        long value = getParameterValue(libcStartMain.get(), libcStartMainInvocationAddress.get(), 0);
-        if (value != 0) {
-            Address mainAddress = toAddr(value);
-            Function main = getOrCreateFunctionAt(mainAddress);
-            if (main.isThunk()) {
-                printerr("Main is a thunked function?");
-            } else {
-                setMainSignature(main);
-                goTo(main);
-            }
+        ParamHelper ph = new ParamHelper(currentProgram, monitor);
+        long value = ph.getParameterValue(libcStartMainInvocationAddress.get(), libcStartMain.get().getParameter(0));
+        if (value == 0) {
+            return null;
         }
 
-        value = getParameterValue(libcStartMain.get(), libcStartMainInvocationAddress.get(), 3);
-        if (value != 0) {
-            Address initAddress = toAddr(value);
-            Function init = getOrCreateFunctionAt(initAddress);
-            ScriptUtils.setFunctionSignature(init, "init", null, null);
-        }
+        Address mainAddress = toAddr(value);
+        Function main = getOrCreateFunctionAt(mainAddress);
 
-        value = getParameterValue(libcStartMain.get(), libcStartMainInvocationAddress.get(), 4);
-        if (value != 0) {
-            Address finiAddress = toAddr(value);
-            Function fini = getOrCreateFunctionAt(finiAddress);
-            ScriptUtils.setFunctionSignature(fini, "fini", null, null);
-        }
-
-        /*
-         * value = getParameterValue(libcStartMain.get(),
-         * libcStartMainInvocationAddress.get(), 5);
-         * if (value != 0) {
-         * Address finiAddress = toAddr(value);
-         * Function fini = getOrCreateFunctionAt(finiAddress);
-         * ScriptUtils.setFunctionSignature(fini, "rtld_fini", null, null);
-         * }
-         */
+        return main;
     }
 
     private Function getOrCreateFunctionAt(Address address) {
